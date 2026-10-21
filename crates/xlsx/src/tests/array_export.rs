@@ -130,6 +130,17 @@ fn dynamic_spills_and_legacy_cse_keep_distinct_ranges() {
     assert!(sh.cell(at("B2")).is_none());
     assert!(sh.cell(at("B3")).is_none());
     assert_eq!(sh.value(at("C1")), Value::Number(6.0));
+    // A spill's cached values are kept as spill values: readable without a recalculation (#2137).
+    assert_eq!(sh.spill_ranges.get(&at("B1")), Some(&range("B1:B3")));
+    assert_eq!((sh.value(at("B2")), sh.value(at("B3"))), (Value::Number(2.0), Value::Number(3.0)));
+    assert!(!sh.spill.contains_key(&at("A2")));
+
+    // Saving again without a recalculation keeps the spill and its values.
+    let bytes = write_xlsx(&back).unwrap();
+    let mut pkg = Package::open(&bytes).unwrap();
+    let sheet = pkg.read_xml("xl/worksheets/sheet1.xml").unwrap().unwrap();
+    assert_dynamic(&sheet, "B1", "B1:B3");
+    assert_eq!(cell(&sheet, "B3").child("v").unwrap().text, "3");
 }
 
 #[test]
