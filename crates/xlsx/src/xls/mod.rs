@@ -314,8 +314,44 @@ fn globals(stream: &[u8], budget: &mut Budget, report: &mut ReadReport) -> Resul
             _ => {}
         }
     }
-    // The same test `defined_names` applies, before any cell formula is decoded.
-    let skipped = g.names.iter().map(|l| !l.rgce.is_empty() && decode(&l.rgce, &l.rgcb, CellRef::new(0, 0), Mode::Name, &g.links).is_err()).collect();
+    // The same test `defined_names` applies, before any cell formula is decoded: a name whose
+    // formula can't be decoded is skipped, and so is every name that uses one, through any chain
+    // of names and whichever order they were defined in (#2192).
+    let n = g.names.len();
+    let mut skipped = vec![false; n];
+    let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (j, name) in g.links.names.iter().enumerate() {
+        by_name.entry(name.as_str()).or_default().push(j);
+    }
+    // users[j]: the names whose formula refers to name j (by its text, so a name shared by
+    // several scopes counts for all of them)
+    let mut users: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, l) in g.names.iter().enumerate() {
+        if l.rgce.is_empty() {
+            continue;
+        }
+        match decode(&l.rgce, &l.rgcb, CellRef::new(0, 0), Mode::Name, &g.links) {
+            Err(_) => skipped[i] = true,
+            Ok(e) => e.walk(&mut |e| {
+                if let gridcraft_formula::Expr::Name(used) = e {
+                    for &j in by_name.get(used.as_str()).map(Vec::as_slice).unwrap_or_default() {
+                        if j != i {
+                            users[j].push(i);
+                        }
+                    }
+                }
+            }),
+        }
+    }
+    let mut todo: Vec<usize> = (0..n).filter(|&i| skipped[i]).collect();
+    while let Some(j) = todo.pop() {
+        for &i in &users[j] {
+            if !skipped[i] {
+                skipped[i] = true;
+                todo.push(i);
+            }
+        }
+    }
     g.links.skipped = skipped;
     Ok(g)
 }

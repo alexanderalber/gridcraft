@@ -335,8 +335,9 @@ pub(super) fn decode(rgce: &[u8], rgcb: &[u8], base: CellRef, mode: Mode, links:
                 let i = usize::try_from(t.u32()?).ok().and_then(|i| i.checked_sub(1));
                 let name = i.and_then(|i| links.names.get(i)).filter(|n| !n.is_empty()).ok_or(Unsupported("reference to a missing defined name"))?;
                 // A cell using a name the import drops would calculate to #NAME?: keep its
-                // saved result instead, as for references to other workbooks.
-                if mode != Mode::Name && i.and_then(|i| links.skipped.get(i)) == Some(&true) {
+                // saved result instead, as for references to other workbooks. A name using one
+                // is skipped too (`links.skipped` is empty while the names are first decoded).
+                if i.and_then(|i| links.skipped.get(i)) == Some(&true) {
                     return Err(Unsupported("defined names GridCraft skipped"));
                 }
                 push(&mut stack, kids, Expr::Name(name.clone()))?;

@@ -510,11 +510,15 @@ fn sheets_share_one_record_budget() {
 #[test]
 fn formulas_using_a_skipped_name_keep_their_saved_results() {
     // Lbl "ExtRange" = [Source.xlsx]Sheet1!$A$1:$A$3 (PtgArea3d through an external SupBook),
-    // "Local" = Sheet1!$A$1 and "Twice" = ExtRange*2. Only the first is skipped on import; a
-    // name that uses it is still read as it was.
+    // "Local" = Sheet1!$A$1, "Twice" = ExtRange*2, "Early" = Later*2 (a forward reference) and
+    // "Later" = ExtRange. ExtRange is skipped on import, and so is every name that uses it,
+    // directly or through another name, in either order (#2192); cells using any of them keep
+    // their saved results.
     let ext = cat(&[&[0x3B], &1u16.to_le_bytes(), &u16s(&[0, 2, 0, 0])]);
     let local = cat(&[&[0x3A], &0u16.to_le_bytes(), &u16s(&[0, 0])]);
     let twice = cat(&[&[0x23], &1u32.to_le_bytes(), &ptg_int(2), &[0x05]]);
+    let early = cat(&[&[0x23], &5u32.to_le_bytes(), &ptg_int(2), &[0x05]]);
+    let later = cat(&[&[0x23], &1u32.to_le_bytes()]);
     let lbl = |name: &str, rgce: &[u8]| {
         rec(0x0018, &cat(&[&u16s(&[0]), &[0, name.len() as u8], &u16s(&[rgce.len() as u16, 0, 0]), &[0; 4], &[0], name.as_bytes(), rgce]))
     };
@@ -529,26 +533,37 @@ fn formulas_using_a_skipped_name_keep_their_saved_results() {
             &lbl("ExtRange", &ext),
             &lbl("Local", &local),
             &lbl("Twice", &twice),
+            &lbl("Early", &early),
+            &lbl("Later", &later),
             &eof(),
         ])
     };
     let sum_ext = cat(&[&[0x43], &1u32.to_le_bytes(), &[0x22, 1], &4u16.to_le_bytes()]);
     let local_x2 = cat(&[&[0x43], &2u32.to_le_bytes(), &ptg_int(2), &[0x05]]);
+    let twice_x2 = cat(&[&[0x43], &3u32.to_le_bytes(), &ptg_int(2), &[0x05]]);
+    let early_x1 = cat(&[&[0x43], &4u32.to_le_bytes(), &ptg_int(1), &[0x05]]);
     let sheet = cat(&[
         &bof(0x0010),
         &rec(0x0203, &cat(&[&cell(0, 0, 0), &10.0f64.to_le_bytes()])),
         &formula(5, 1, num(60.0), &sum_ext),
         &formula(6, 1, num(20.0), &local_x2),
+        &formula(7, 1, num(240.0), &twice_x2),
+        &formula(8, 1, num(120.0), &early_x1),
         &eof(),
     ]);
     let pos = globals(0).len() as u32;
     let (wb, report) = read_xls(&compound("Workbook", &cat(&[&globals(pos), &sheet]))).unwrap();
     let names: Vec<_> = wb.names.iter().map(|n| (n.name.as_str(), n.formula.as_str())).collect();
-    assert_eq!(names, [("Local", "Sheet1!$A$1"), ("Twice", "ExtRange*2")]);
+    assert_eq!(names, [("Local", "Sheet1!$A$1")]);
     assert_eq!(ftext(&wb, "B6"), None);
     assert_eq!(v(&wb, 0, "B6"), Value::Number(60.0));
     assert_eq!(ftext(&wb, "B7").as_deref(), Some("Local*2"));
+    for (cell, saved) in [("B8", 240.0), ("B9", 120.0)] {
+        assert_eq!(ftext(&wb, cell), None, "{cell} uses a name that uses a skipped name");
+        assert_eq!(v(&wb, 0, cell), Value::Number(saved));
+    }
     assert!(report.warnings.iter().any(|w| w.contains("defined names") && w.contains("saved results")), "{:?}", report.warnings);
+    assert!(report.warnings.iter().any(|w| w.starts_with("Some defined names use") && w.contains("skipped")), "{:?}", report.warnings);
 }
 
 #[test]
