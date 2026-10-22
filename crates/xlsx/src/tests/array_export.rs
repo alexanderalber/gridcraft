@@ -132,6 +132,47 @@ fn dynamic_spills_and_legacy_cse_keep_distinct_ranges() {
     assert_eq!(sh.value(at("C1")), Value::Number(6.0));
 }
 
+/// Text inside a spill or array range is a formula result (`t="str"`), not a shared-string constant:
+/// Excel shows #VALUE! for the latter until it recalculates (#2301).
+#[test]
+fn text_inside_spill_and_array_ranges_is_written_as_a_string_result() {
+    let mut wb = Workbook::new();
+    let sh = wb.sheet_mut(0).unwrap();
+    let mut anchor = Cell::formula(Formula::new("SORT({\"b\";\"a\";\"c\"})"));
+    anchor.value = Value::text("a");
+    sh.cells.set(at("A1"), anchor);
+    sh.spill_ranges.insert(at("A1"), range("A1:A3"));
+    sh.spill.insert(at("A2"), Value::text("b"));
+    sh.spill.insert(at("A3"), Value::text("c <&> \"d\""));
+    let mut legacy = Formula::new("{\"x\";\"y\"}");
+    legacy.array = Some(range("B1:B2"));
+    sh.cells.set(at("B1"), Cell::formula(legacy));
+    sh.spill_ranges.insert(at("B1"), range("B1:B2"));
+    sh.spill.insert(at("B2"), Value::text("y"));
+    // a plain text constant next to them stays a shared string
+    sh.cells.set(at("C1"), Cell::value(Value::text("b")));
+
+    let bytes = write_xlsx(&wb).unwrap();
+    let mut pkg = Package::open(&bytes).unwrap();
+    let sheet = pkg.read_xml("xl/worksheets/sheet1.xml").unwrap().unwrap();
+    assert_dynamic(&sheet, "A1", "A1:A3");
+    for (address, text) in [("A2", "b"), ("A3", "c <&> \"d\""), ("B2", "y")] {
+        let c = cell(&sheet, address);
+        assert_eq!(c.attr("t"), Some("str"), "string result at {address}");
+        assert!(c.child("f").is_none(), "no formula of its own at {address}");
+        assert_eq!(c.child("v").unwrap().text, text, "text at {address}");
+    }
+    assert_eq!(cell(&sheet, "C1").attr("t"), Some("s"));
+    let sst = pkg.read_xml("xl/sharedStrings.xml").unwrap().unwrap();
+    assert_eq!(sst.kids("si").count(), 1, "only the constant goes to the shared strings");
+
+    // the file still reads: the anchor keeps its formula and the constant its text
+    let (back, _) = read_xlsx(&bytes).unwrap();
+    let sh = back.sheet(0).unwrap();
+    assert_eq!(sh.cell(at("A1")).unwrap().formula.as_ref().unwrap().text, "SORT({\"b\";\"a\";\"c\"})");
+    assert_eq!(sh.value(at("C1")), Value::text("b"));
+}
+
 #[test]
 fn scalar_formulas_constants_and_legacy_cse_do_not_require_dynamic_metadata() {
     let mut wb = Workbook::new();
