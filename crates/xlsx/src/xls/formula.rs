@@ -216,12 +216,19 @@ fn push(stack: &mut Stack, kids: usize, e: Expr) -> Result<(), Unsupported> {
 /// Decodes `rgce` (tokens) with `rgcb` (the extra data for array constants) evaluated at
 /// `base`. Returns the expression or why it can't be represented.
 pub(super) fn decode(rgce: &[u8], rgcb: &[u8], base: CellRef, mode: Mode, links: &Links) -> Result<Expr, Unsupported> {
+    decode_with_names(rgce, rgcb, base, mode, links).map(|(e, _)| e)
+}
+
+/// `decode`, also returning the indices (into `links.names`) of the defined names the formula
+/// refers to: a name shared by several scopes is told apart by its index, not its text.
+pub(super) fn decode_with_names(rgce: &[u8], rgcb: &[u8], base: CellRef, mode: Mode, links: &Links) -> Result<(Expr, Vec<usize>), Unsupported> {
     if rgce.len() > MAX_RGCE {
         return Err(Unsupported("formula too long"));
     }
     let mut t = Bytes { b: rgce, pos: 0 };
     let mut extra = Bytes { b: rgcb, pos: 0 };
     let mut stack: Stack = Vec::new();
+    let mut used_names = Vec::new();
     while t.pos < rgce.len() {
         let ptg = t.u8()?;
         let mut kids = 0usize;
@@ -340,6 +347,11 @@ pub(super) fn decode(rgce: &[u8], rgcb: &[u8], base: CellRef, mode: Mode, links:
                 if i.and_then(|i| links.skipped.get(i)) == Some(&true) {
                     return Err(Unsupported("defined names GridCraft skipped"));
                 }
+                if let Some(i) = i
+                    && used_names.len() < MAX_RGCE
+                {
+                    used_names.push(i);
+                }
                 push(&mut stack, kids, Expr::Name(name.clone()))?;
             }
             0x24 | 0x2C => {
@@ -424,7 +436,7 @@ pub(super) fn decode(rgce: &[u8], rgcb: &[u8], base: CellRef, mode: Mode, links:
     if !stack.is_empty() {
         return Err(Unsupported("malformed formula (unused operands)"));
     }
-    Ok(e)
+    Ok((e, used_names))
 }
 
 /// PtgExtraArray ([MS-XLS] 2.5.198.59): an array constant's values in row-major order.

@@ -514,14 +514,20 @@ fn formulas_using_a_skipped_name_keep_their_saved_results() {
     // "Later" = ExtRange. ExtRange is skipped on import, and so is every name that uses it,
     // directly or through another name, in either order (#2192); cells using any of them keep
     // their saved results.
+    // Two names share the text "Dup": the workbook-level one (6) = Sheet1!$A$1 stays, the
+    // Sheet1-scoped one (7) = ExtRange is skipped; "UsesDup" = Dup(6)*2 stays, as it uses the
+    // one that stays. "Empty" (9) has no formula, so "UsesEmpty" = Empty(9) is skipped too.
     let ext = cat(&[&[0x3B], &1u16.to_le_bytes(), &u16s(&[0, 2, 0, 0])]);
     let local = cat(&[&[0x3A], &0u16.to_le_bytes(), &u16s(&[0, 0])]);
     let twice = cat(&[&[0x23], &1u32.to_le_bytes(), &ptg_int(2), &[0x05]]);
     let early = cat(&[&[0x23], &5u32.to_le_bytes(), &ptg_int(2), &[0x05]]);
     let later = cat(&[&[0x23], &1u32.to_le_bytes()]);
-    let lbl = |name: &str, rgce: &[u8]| {
-        rec(0x0018, &cat(&[&u16s(&[0]), &[0, name.len() as u8], &u16s(&[rgce.len() as u16, 0, 0]), &[0; 4], &[0], name.as_bytes(), rgce]))
+    let uses_dup = cat(&[&[0x23], &6u32.to_le_bytes(), &ptg_int(2), &[0x05]]);
+    let uses_empty = cat(&[&[0x23], &9u32.to_le_bytes()]);
+    let lbl_in = |name: &str, rgce: &[u8], itab: u16| {
+        rec(0x0018, &cat(&[&u16s(&[0]), &[0, name.len() as u8], &u16s(&[rgce.len() as u16, 0, itab]), &[0; 4], &[0], name.as_bytes(), rgce]))
     };
+    let lbl = |name: &str, rgce: &[u8]| lbl_in(name, rgce, 0);
     let boundsheet = |pos: u32| rec(0x0085, &cat(&[&pos.to_le_bytes(), &[0, 0, 6, 0], b"Sheet1"]));
     let globals = |pos: u32| {
         cat(&[
@@ -535,6 +541,11 @@ fn formulas_using_a_skipped_name_keep_their_saved_results() {
             &lbl("Twice", &twice),
             &lbl("Early", &early),
             &lbl("Later", &later),
+            &lbl("Dup", &local),
+            &lbl_in("Dup", &ext, 1),
+            &lbl("UsesDup", &uses_dup),
+            &lbl("Empty", &[]),
+            &lbl("UsesEmpty", &uses_empty),
             &eof(),
         ])
     };
@@ -542,6 +553,8 @@ fn formulas_using_a_skipped_name_keep_their_saved_results() {
     let local_x2 = cat(&[&[0x43], &2u32.to_le_bytes(), &ptg_int(2), &[0x05]]);
     let twice_x2 = cat(&[&[0x43], &3u32.to_le_bytes(), &ptg_int(2), &[0x05]]);
     let early_x1 = cat(&[&[0x43], &4u32.to_le_bytes(), &ptg_int(1), &[0x05]]);
+    let uses_dup_x1 = cat(&[&[0x43], &8u32.to_le_bytes(), &ptg_int(1), &[0x05]]);
+    let uses_empty_x1 = cat(&[&[0x43], &10u32.to_le_bytes(), &ptg_int(1), &[0x05]]);
     let sheet = cat(&[
         &bof(0x0010),
         &rec(0x0203, &cat(&[&cell(0, 0, 0), &10.0f64.to_le_bytes()])),
@@ -549,19 +562,22 @@ fn formulas_using_a_skipped_name_keep_their_saved_results() {
         &formula(6, 1, num(20.0), &local_x2),
         &formula(7, 1, num(240.0), &twice_x2),
         &formula(8, 1, num(120.0), &early_x1),
+        &formula(9, 1, num(20.0), &uses_dup_x1),
+        &formula(10, 1, num(7.0), &uses_empty_x1),
         &eof(),
     ]);
     let pos = globals(0).len() as u32;
     let (wb, report) = read_xls(&compound("Workbook", &cat(&[&globals(pos), &sheet]))).unwrap();
     let names: Vec<_> = wb.names.iter().map(|n| (n.name.as_str(), n.formula.as_str())).collect();
-    assert_eq!(names, [("Local", "Sheet1!$A$1")]);
+    assert_eq!(names, [("Local", "Sheet1!$A$1"), ("Dup", "Sheet1!$A$1"), ("UsesDup", "Dup*2")]);
     assert_eq!(ftext(&wb, "B6"), None);
     assert_eq!(v(&wb, 0, "B6"), Value::Number(60.0));
     assert_eq!(ftext(&wb, "B7").as_deref(), Some("Local*2"));
-    for (cell, saved) in [("B8", 240.0), ("B9", 120.0)] {
+    for (cell, saved) in [("B8", 240.0), ("B9", 120.0), ("B11", 7.0)] {
         assert_eq!(ftext(&wb, cell), None, "{cell} uses a name that uses a skipped name");
         assert_eq!(v(&wb, 0, cell), Value::Number(saved));
     }
+    assert_eq!(ftext(&wb, "B10").as_deref(), Some("UsesDup*1"));
     assert!(report.warnings.iter().any(|w| w.contains("defined names") && w.contains("saved results")), "{:?}", report.warnings);
     assert!(report.warnings.iter().any(|w| w.starts_with("Some defined names use") && w.contains("skipped")), "{:?}", report.warnings);
 }

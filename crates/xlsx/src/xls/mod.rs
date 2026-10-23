@@ -22,7 +22,7 @@ use gridcraft_model::{CalcMode, CalcSettings, Cell, DefinedName, Formula, LineIn
 use crate::cfb::Compound;
 use crate::tables::{builtin_format, col_width_to_px, pt_to_px};
 use crate::{IoError, ReadReport};
-use formula::{Links, Mode, SupBook, Unsupported, Xti, cell_error, decode};
+use formula::{Links, Mode, SupBook, Unsupported, Xti, cell_error, decode, decode_with_names};
 use records::{Cursor, Record, Records};
 
 const MAX_CELLS: usize = 4_000_000;
@@ -319,28 +319,26 @@ fn globals(stream: &[u8], budget: &mut Budget, report: &mut ReadReport) -> Resul
     // of names and whichever order they were defined in (#2192).
     let n = g.names.len();
     let mut skipped = vec![false; n];
-    let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
-    for (j, name) in g.links.names.iter().enumerate() {
-        by_name.entry(name.as_str()).or_default().push(j);
-    }
-    // users[j]: the names whose formula refers to name j (by its text, so a name shared by
-    // several scopes counts for all of them)
+    // users[j]: the names whose formula refers to name j (by its Lbl index, so two scopes'
+    // names with the same text are told apart)
     let mut users: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (i, l) in g.names.iter().enumerate() {
+        // A name without a formula is not imported either, so neither are its users.
         if l.rgce.is_empty() {
+            skipped[i] = true;
             continue;
         }
-        match decode(&l.rgce, &l.rgcb, CellRef::new(0, 0), Mode::Name, &g.links) {
+        match decode_with_names(&l.rgce, &l.rgcb, CellRef::new(0, 0), Mode::Name, &g.links) {
             Err(_) => skipped[i] = true,
-            Ok(e) => e.walk(&mut |e| {
-                if let gridcraft_formula::Expr::Name(used) = e {
-                    for &j in by_name.get(used.as_str()).map(Vec::as_slice).unwrap_or_default() {
-                        if j != i {
-                            users[j].push(i);
-                        }
+            Ok((_, used)) => {
+                for j in used {
+                    if j != i
+                        && let Some(u) = users.get_mut(j)
+                    {
+                        u.push(i);
                     }
                 }
-            }),
+            }
         }
     }
     let mut todo: Vec<usize> = (0..n).filter(|&i| skipped[i]).collect();
