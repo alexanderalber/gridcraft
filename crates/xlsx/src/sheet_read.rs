@@ -518,9 +518,10 @@ fn read_formula_text(cx: &mut Ctx<'_>, st: &mut RowState, f: &El, pos: CellRef, 
             let range = f.attr("ref").and_then(RangeRef::parse).unwrap_or(RangeRef::cell(pos));
             if !range.is_single() {
                 st.dynamic.push(range);
-                if dynamic {
-                    st.spills.push(range);
-                }
+            }
+            // A one-cell dynamic result is a spill range too (`A1#` refers to it).
+            if dynamic {
+                st.spills.push(range);
             }
             if !dynamic {
                 fm.array = Some(range);
